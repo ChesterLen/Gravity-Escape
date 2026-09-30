@@ -1,0 +1,203 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Gravity Escape</title>
+  <style>
+    * {
+      box-sizing: border-box
+    }
+
+    html,
+    body {
+      margin: 0;
+      height: 100%;
+      overflow: hidden;
+      background: #050714;
+      font-family: system-ui, sans-serif;
+      color: #fff
+    }
+
+    body {
+      display: grid;
+      place-items: center
+    }
+
+    #game {
+      display: block;
+      width: 100vw;
+      height: 100vh;
+      background: #070b20
+    }
+
+    #hud {
+      position: fixed;
+      inset: 0 0 auto;
+      display: flex;
+      justify-content: space-between;
+      padding: 16px 20px;
+      font-weight: 800;
+      text-shadow: 0 2px 8px #000;
+      pointer-events: none
+    }
+
+    .hudRight {
+      display: flex;
+      gap: 18px
+    }
+
+    #message {
+      position: fixed;
+      inset: 0;
+      display: grid;
+      place-items: center;
+      text-align: center
+    }
+
+    .card {
+      max-width: 540px;
+      padding: 30px;
+      border-radius: 18px;
+      background: rgba(4, 7, 22, .9);
+      border: 1px solid #62e6ff;
+      box-shadow: 0 0 45px rgba(50, 180, 255, .2)
+    }
+
+    h1 {
+      margin: 0 0 10px;
+      font-size: clamp(38px, 8vw, 70px)
+    }
+
+    p {
+      line-height: 1.5;
+      color: #cbd7ff
+    }
+
+    .key {
+      display: inline-block;
+      padding: 4px 9px;
+      border: 1px solid #7894ff;
+      border-radius: 7px;
+      background: #111a42
+    }
+
+    button {
+      margin-top: 15px;
+      padding: 12px 22px;
+      border: 0;
+      border-radius: 10px;
+      background: #62e6ff;
+      color: #04101a;
+      font-weight: 900;
+      cursor: pointer
+    }
+
+    .hidden {
+      display: none !important
+    }
+  </style>
+</head>
+
+<body>
+  <canvas id="game"></canvas>
+  <div id="hud">
+    <div>CRYSTALS <span id="score">0</span></div>
+    <div class="hudRight"><span>BEST <span id="best">0</span></span><span>TIME <span id="time">0.0</span></span></div>
+  </div>
+  <div id="message">
+    <div class="card" id="card">
+      <h1>GRAVITY ESCAPE</h1>
+      <p>Run across an alien planet, collect energy crystals and dodge deadly obstacles.</p>
+      <p>Press <span class="key">SPACE</span> or tap to switch gravity.</p><button id="start">START RUN</button>
+    </div>
+  </div>
+  <script>
+    const canvas = document.getElementById('game'), ctx = canvas.getContext('2d');
+    const scoreEl = document.getElementById('score'), bestEl = document.getElementById('best'), timeEl = document.getElementById('time'), message = document.getElementById('message'), card = document.getElementById('card');
+    let W, H, dpr, running = false, last = 0, elapsed = 0, score = 0, groundY, player, items = [], particles = [], obstacleTimer, crystalTimer;
+    let best = Number(localStorage.getItem('gravityEscapeBest') || 0); bestEl.textContent = best;
+    const stars = Array.from({length: 100}, () => ({x: Math.random(), y: Math.random(), s: Math.random() * 2 + .4, a: Math.random() * .7 + .2}));
+    function resize() {W = innerWidth; H = innerHeight; dpr = Math.min(devicePixelRatio || 1, 2); canvas.width = W * dpr; canvas.height = H * dpr; canvas.style.width = W + 'px'; canvas.style.height = H + 'px'; ctx.setTransform(dpr, 0, 0, dpr, 0, 0); groundY = H * .78} addEventListener('resize', resize); resize();
+    function reset() {groundY = H * .78; player = {x: W * .18, y: groundY - 42, w: 34, h: 42, vy: 0, gravity: 1}; items = []; particles = []; elapsed = 0; score = 0; obstacleTimer = .8; crystalTimer = .4; scoreEl.textContent = 0; timeEl.textContent = '0.0'}
+    function startGame() {reset(); running = true; message.classList.add('hidden'); last = performance.now(); requestAnimationFrame(loop)}
+    document.getElementById('start').onclick = startGame;
+    function action() {if (!running) {startGame(); return } player.gravity *= -1; player.vy = player.gravity * 230; burst(player.x + player.w / 2, player.y + player.h / 2, 12)}
+    addEventListener('keydown', e => {if (e.code === 'Space') {e.preventDefault(); action()} }); canvas.addEventListener('pointerdown', action);
+    function rectsOverlap(a, b, pad = 0) {return a.x < b.x + b.w + pad && a.x + a.w > b.x - pad && a.y < b.y + b.h + pad && a.y + a.h > b.y - pad}
+    function obstacleClearance(rect) {
+      const safe = 45;
+      return !items.some(o => o.type === 'obstacle' && rectsOverlap(rect, o, safe));
+    }
+    function crystalClearanceFromObstacles(rect) {
+      const horizontalGap = 105;
+      const verticalGap = 38;
+      return !items.some(o => {
+        if (o.type !== 'obstacle') return false;
+        const horizontal = rect.x < o.x + o.w + horizontalGap && rect.x + rect.w > o.x - horizontalGap;
+        const vertical = rect.y < o.y + o.h + verticalGap && rect.y + rect.h > o.y - verticalGap;
+        return horizontal && vertical;
+      });
+    }
+    function crystalClearanceFromCrystals(rect) {
+      return !items.some(o => o.type === 'crystal' && rectsOverlap(rect, o, 120));
+    }
+    function reachableY() {
+      // Keep collectibles on one of two predictable lanes. The player can always reach either lane by one gravity flip.
+      return Math.random() < .5 ? groundY - 88 : 68;
+    }
+    function spawnObstacle() {
+      const h = 35 + Math.random() * 65, top = Math.random() < .5;
+      const candidate = {type: 'obstacle', x: W + 50, y: top ? 45 : groundY - h, w: 38 + Math.random() * 30, h};
+      // Never introduce an obstacle close to an existing collectible.
+      if (items.some(i => i.type === 'crystal' && rectsOverlap(candidate, i, 105))) return;
+      items.push(candidate);
+    }
+    function spawnCrystal() {
+      const w = 22, h = 22;
+      // Try several candidates and only accept one with generous clearance from every obstacle.
+      for (let attempt = 0; attempt < 12; attempt++) {
+        const x = W + 130 + attempt * 18 + Math.random() * 55;
+        const y = reachableY();
+        const candidate = {type: 'crystal', x, y, w, h};
+        if (!obstacleClearance(candidate)) continue;
+        if (!crystalClearanceFromObstacles(candidate)) continue;
+        if (!crystalClearanceFromCrystals(candidate)) continue;
+        items.push(candidate); return;
+      }
+      // If there is no safe candidate, skip this spawn instead of creating an unfair collectible.
+    }
+    function burst(x, y, n) {for (let i = 0; i < n; i++)particles.push({x, y, vx: (Math.random() - .5) * 180, vy: (Math.random() - .5) * 180, life: .5 + Math.random() * .5})}
+    function collision(a, b) {return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y}
+    function update(dt) {
+      elapsed += dt; timeEl.textContent = elapsed.toFixed(1); const speed = 280 + Math.min(elapsed * 7, 210);
+      player.vy += player.gravity * 900 * dt; player.y += player.vy * dt;
+      const surface = player.gravity === 1 ? groundY - player.h : 40;
+      if (player.gravity === 1 && player.y > surface) {player.y = surface; player.vy = 0} if (player.gravity === -1 && player.y < surface) {player.y = surface; player.vy = 0}
+      obstacleTimer -= dt; if (obstacleTimer <= 0) {spawnObstacle(); obstacleTimer = Math.max(.6, 1.3 - elapsed * .01) * (.8 + Math.random() * .3)}
+      crystalTimer -= dt; if (crystalTimer <= 0) {spawnCrystal(); crystalTimer = .85 + Math.random() * .7}
+      for (let i = items.length - 1; i >= 0; i--) {
+        const item = items[i]; item.x -= speed * dt;
+        if (item.type === 'crystal') {item.y += Math.sin((elapsed + item.x) * .012) * .35; if (collision(player, item)) {score++; scoreEl.textContent = score; burst(item.x, item.y, 15); items.splice(i, 1); continue} }
+        if (item.type === 'obstacle' && collision(player, item)) {gameOver(); return }
+        if (item.x + item.w < 0) items.splice(i, 1);
+      }
+      for (let i = particles.length - 1; i >= 0; i--) {const p = particles[i]; p.x += p.vx * dt; p.y += p.vy * dt; p.life -= dt; if (p.life <= 0) particles.splice(i, 1)}
+    }
+    function gameOver() {running = false; best = Math.max(best, score); localStorage.setItem('gravityEscapeBest', best); bestEl.textContent = best; card.innerHTML = `<h1>RUN OVER</h1><p>You collected <strong>${score}</strong> crystals in <strong>${elapsed.toFixed(1)}s</strong>.</p><p>Press <span class="key">SPACE</span> or tap to try again.</p><button id="again">RESTART</button>`; document.getElementById('again').onclick = startGame; message.classList.remove('hidden')}
+    function draw() {
+      ctx.clearRect(0, 0, W, H); const g = ctx.createLinearGradient(0, 0, 0, H); g.addColorStop(0, '#0b1035'); g.addColorStop(1, '#02030b'); ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+      for (const s of stars) {ctx.fillStyle = `rgba(180,225,255,${s.a})`; ctx.fillRect(s.x * W, s.y * H, s.s, s.s)}
+      ctx.fillStyle = '#111c45'; ctx.fillRect(0, groundY, W, H - groundY); ctx.fillStyle = '#1f3470'; ctx.fillRect(0, groundY - 4, W, 4);
+      ctx.beginPath(); ctx.moveTo(0, groundY); for (let x = 0; x <= W; x += 80)ctx.lineTo(x, groundY - 30 - Math.abs(Math.sin(x * .017)) * 55); ctx.lineTo(W, H); ctx.lineTo(0, H); ctx.fillStyle = '#09102b'; ctx.fill();
+      for (const item of items) {if (item.type === 'crystal') {ctx.save(); ctx.translate(item.x + 11, item.y + 11); ctx.rotate(Math.PI / 4 + elapsed); ctx.fillStyle = '#61f3ff'; ctx.shadowColor = '#61f3ff'; ctx.shadowBlur = 18; ctx.fillRect(-8, -8, 16, 16); ctx.restore()} else {ctx.fillStyle = '#a24dff'; ctx.shadowColor = '#a24dff'; ctx.shadowBlur = 14; ctx.fillRect(item.x, item.y, item.w, item.h); ctx.shadowBlur = 0; ctx.fillStyle = '#d7a5ff'; ctx.fillRect(item.x + 7, item.y + 6, 6, 5)} }
+      if (player) {ctx.save(); ctx.translate(player.x + player.w / 2, player.y + player.h / 2); if (player.gravity < 0) ctx.scale(1, -1); ctx.fillStyle = '#e9f7ff'; ctx.shadowColor = '#5fe6ff'; ctx.shadowBlur = 20; ctx.fillRect(-13, -12, 26, 28); ctx.shadowBlur = 0; ctx.fillStyle = '#14234b'; ctx.fillRect(-9, -8, 18, 10); ctx.fillStyle = '#62e6ff'; ctx.fillRect(-6, -5, 5, 4); ctx.fillStyle = '#ffb85c'; ctx.fillRect(-17, 11, 7, 5); ctx.fillRect(10, 11, 7, 5); ctx.restore()}
+      for (const p of particles) {ctx.fillStyle = `rgba(98,230,255,${Math.max(0, p.life)})`; ctx.fillRect(p.x, p.y, 3, 3)}
+    }
+    function loop(now) {const dt = Math.min((now - last) / 1000, .033); last = now; if (running) update(dt); draw(); if (running) requestAnimationFrame(loop)}
+    reset(); draw();
+  </script>
+</body>
+
+</html>
